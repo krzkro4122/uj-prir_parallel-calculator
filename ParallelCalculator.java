@@ -1,40 +1,47 @@
 import java.util.concurrent.*;
 
-class ParallelCalculator implements Callable<Void>, DeltaParallelCalculator {
+class ParallelCalculator implements Callable<Integer>, DeltaParallelCalculator {
     // Fields
-    Thread[] threads;
+    int threads = 0;
     DeltaReceiver deltaReceiver;
 
     // Methods
-    ParallelCalculator(int threads) {
-        setThreadsNumber(threads);
-    }
+    ParallelCalculator(int threads) { this.setThreadsNumber(threads); }
 
-    public void setThreadsNumber(int threads) {
-        for (int i = 0; i < threads; i++) {
-            this.threads[i] = new Thread();
-        }
-    }
+    @Override
+    public void setThreadsNumber(int threads) { this.threads = threads; }
 
-    public void setDeltaReceiver(DeltaReceiver receiver) {
-        this.deltaReceiver = receiver;
-    }
+    @Override
+    public void setDeltaReceiver(DeltaReceiver receiver) { this.deltaReceiver = receiver; }
 
+    @Override
     public void addData(Data data) {}
 
-    public List< call() throws Exception {
+    @Override
+    public Integer call() throws Exception {
+        Thread.currentThread().yield();
         System.out.println("[" + Thread.currentThread().getName() + "] I am saying shit!");
-        return new Void();
+        Thread.currentThread().yield();
+        return 2;
     }
 
     // Main
     public static void main(String[] args) {
         System.out.println("It's-a me Javio!");
-        ParallelCalculator pc = new ParallelCalculator(4);
 
-        ExecutorService executorService = Executors.newCachedThreadPool();
-        CompletionService<Void> completionService = new ExecutorCompletionService<>(executorService);
+        ParallelCalculator pc = new ParallelCalculator(4);
+        ExecutorService executorService = Executors.newFixedThreadPool(pc.threads);
+        CompletionService<Integer> completionService = new ExecutorCompletionService<>(executorService);
 
         completionService.submit(pc);
+
+        Future<Integer> response;
+        try {
+            response = completionService.take();
+            System.out.println( "Wynik " + response.get() );
+        } catch ( Exception e ) {
+            System.out.println("Error response?");
+        }
+        executorService.shutdown();
     }
 }

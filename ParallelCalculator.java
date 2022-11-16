@@ -39,10 +39,10 @@ class ParallelCalculator implements DeltaParallelCalculator {
 
     @Override
     public void addData(Data data) {
-        // synchronize with this, is it safe??? no clue!
+        // TODO - synchronize with this, is it safe??? no clue!
         synchronized (this) {
             priorityQueue.add(data);
-            System.out.println("Added data of ID: " + data.getDataId());
+            System.out.println("[Queue] Added data of ID: " + data.getDataId());
         }
     }
 
@@ -52,7 +52,28 @@ class ParallelCalculator implements DeltaParallelCalculator {
     *   The Data pairs with the lowest IDs are consumed first.
     */
     public void consumeQueue(PriorityQueue<Data> priorityQueue) {
-        System.out.println(priorityQueue);
+        Data firstData, secondData;
+        // TODO - queue parsing and Data set dissagregation stuff woof woof
+        completionService.submit(createTask(firstData, secondData));
+    }
+
+    // Idea: check if any results emerge and
+    public void pollResults() {
+        boolean errors = false;
+        while (!errors) {
+            Future<ArrayList<Delta>> response;
+            try {
+                response = completionService.take();
+                System.out.println("Response: " + response.get());
+                synchronized (this) {
+                    deltaReceiver.accept(response.get());
+                }
+            } catch ( Exception e ) {
+                errors = true;
+                System.out.println("Something went wrong! Error message:" + e.getStackTrace());
+            }
+        }
+
     }
 
     // Create a task that compares the consequent data values and returns a list of discrepant data's indeces
@@ -67,7 +88,7 @@ class ParallelCalculator implements DeltaParallelCalculator {
                 for (int i = 0; i < data1.getSize(); i++) {
                     int value1 = data1.getValue(i);
                     int value2 = data2.getValue(i);
-                    // Add the indeces of missmatched data values to the list
+                    // Add the resulting Delta created from the missmatched data values and index to the list
                     if ( value1 != value2 ) {
                         badIndeces.add(new Delta(data1.getDataId(), i, value1 - value2));
                     }
@@ -80,19 +101,6 @@ class ParallelCalculator implements DeltaParallelCalculator {
     // Main
     public static void main(String[] args) {
         ParallelCalculator pc = new ParallelCalculator(4);
-
-        pc.completionService.submit(pc.createTask(i));
-
-        boolean errors = false;
-        while (!errors) {
-            Future<ArrayList<Delta>> response = pc.completionService.take();
-            try {
-                System.out.println( "Wynik " + response.get() );
-            } catch ( Exception e ) {
-                errors = true;
-                System.out.println("Something went wrong! Error message:" + e.getStackTrace());
-            }
-        }
         pc.executorService.shutdown();
     }
 }

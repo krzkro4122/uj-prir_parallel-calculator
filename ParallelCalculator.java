@@ -6,56 +6,27 @@ import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 
 import java.util.NoSuchElementException;
 import java.util.AbstractMap.SimpleEntry;
 import java.util.Comparator;
+import java.util.AbstractQueue;
 import java.util.ArrayList;
 import java.util.List;
 
-class Task implements Runnable {
-    // Fields
-    Data firstData, secondData;
-    // Methods
-    Task(Data firstData, Data secondData) {
-        this.firstData = firstData;
-        this.secondData =  secondData;
-    }
-    // This does all the dirty work AKA computations
-    @Override
-    public void run() {
-        System.out.println("[call] Starting...");
-        ArrayList<Delta> badIndeces = new ArrayList<Delta>();
-        // Compare consequent data values.
-        // Assumption: both data sets are of the same size
-        for (int i = 0; i < firstData.getSize(); i++) {
-            System.out.println("[call] i: " + i);
-            int value1 = firstData.getValue(i);
-            int value2 = secondData.getValue(i);
-            // Add the resulting Delta created from the missmatched data values and index to the list
-            if ( value1 != value2 ) { badIndeces.add(new Delta(firstData.getDataId(), i, value1 - value2)); }
-        }
-    }
-};
-
 class ParallelCalculator implements DeltaParallelCalculator {
     // Fields
-    int threads = 0;
-    DeltaReceiver deltaReceiver;
-    ExecutorService executorService;
-    PriorityBlockingQueue<Runnable> taskQueue;
+    List<Data> dataContainer = new ArrayList<Data>();
+    private int threads = 0;
+    private DeltaReceiver deltaReceiver;
+    private ThreadPoolExecutor executorService;
+    private PriorityBlockingQueue<Runnable> taskQueue;
     // CompletionService<ArrayList<Delta>> completionService;
 
     // Methods
     ParallelCalculator() {
-        // Define the Data queue container
-        taskQueue = new PriorityBlockingQueue<>(this.threads * 2, new Comparator<Data>() {
-            @Override
-            public int compare(Data firstData, Data secondData) {
-                return Integer.compare(firstData.getDataId(), secondData.getDataId());
-            }
-        });
         // Initialize the continuous receiver function
         consumeQueue();
     }
@@ -63,8 +34,13 @@ class ParallelCalculator implements DeltaParallelCalculator {
     @Override
     public void setThreadsNumber(int threads) {
         this.threads = threads;
-        executorService = new ThreadPoolExecutor(this.threads, this.threads, 0L, TimeUnit.SECONDS, taskQueue);
-        completionService = new ExecutorCompletionService<>(executorService);
+        executorService = new ThreadPoolExecutor(
+            this.threads,
+            this.threads,
+            0L,
+            TimeUnit.SECONDS,
+            new TaskQueue(this.threads * 5)
+        );
     }
 
     @Override
@@ -72,7 +48,10 @@ class ParallelCalculator implements DeltaParallelCalculator {
 
     @Override
     public void addData(Data data) {
-        taskQueue.add(data);
+        dataContainer.add(data);
+
+        // TODO ???
+
         System.out.println("[Queue] Added data: ID -> " + data.getDataId());
     }
 
@@ -86,21 +65,16 @@ class ParallelCalculator implements DeltaParallelCalculator {
         // Custom Kolejka ktora
         try {
             System.out.println("[" + Thread.currentThread() + "] Consuming! PriorityQueue[len=" + taskQueue.size() + "]: " + taskQueue);
-            if (taskQueue.size() > 1) {
-                Data firstData = taskQueue.remove();
-                Data secondData = taskQueue.remove();
+            if ( !taskQueue.isEmpty() ) {
+                Task task = (Task) taskQueue.remove();
 
                 // No dissagregatrion just yet! >:D
                 // TODO - queue parsing and Data set dissagregation stuff woof woof
 
-                System.out.println("[consumeQueue] Using dataID: " + firstData.getDataId() +
-                    " and " + secondData.getDataId() +  " to create a task...");
-                Task task = createTask(firstData, secondData);
-
                 System.out.println("[consumeQueue] Created a task: " + task + " - Submitting and getting...");
                 // Future<ArrayList<Delta>> response = completionService.submit(task);
-                deltaReceiver.accept(completionService.submit(task).get()); // ???
-
+                executorService.execute(task);
+                deltaReceiver.accept(); // ???
                 // System.out.println("[consumeQueue] Submitted a task:  Taking...");
                 // response = completionService.take();
 
@@ -124,6 +98,46 @@ class ParallelCalculator implements DeltaParallelCalculator {
         System.out.println("[createTask] Starting...");
         return new Task(dataEntry.getKey(), dataEntry.getValue());
     };
+
+    private class Task implements Runnable {
+        // Fields
+        final Data firstData;
+        final Data secondData;
+        // Methods
+        Task(SimpleEntry<Data,Data> dataEntry) {
+            firstData = dataEntry.getKey();
+            secondData = dataEntry.getValue();
+        }
+        // This does all the dirty work AKA computations
+        @Override
+        public void run() {
+            System.out.println("[call] Starting...");
+            ArrayList<Delta> badIndeces = new ArrayList<Delta>();
+            // Compare consequent data values.
+            // Assumption: both data sets are of the same size
+            for (int i = 0; i < firstData.getSize(); i++) {
+                System.out.println("[call] i: " + i);
+                int value1 = firstData.getValue(i);
+                int value2 = secondData.getValue(i);
+                // Add the resulting Delta created from the missmatched data values and index to the list
+                if ( value1 != value2 ) { badIndeces.add(new Delta(firstData.getDataId(), i, value1 - value2)); }
+            }
+        }
+    };
+
+    private class TaskQueue extends PriorityBlockingQueue<Runnable> {
+        public TaskQueue(int capacity) {
+            super(capacity, new Comparator<Runnable>() {
+                @Override
+                public int compare(Runnable firstTask, Runnable secondTask) {
+                    return Integer.compare(
+                        ((Task)firstTask).firstData.getDataId(),
+                        ((Task)(secondTask)).secondData.getDataId()
+                    );
+                }
+            });
+        }
+    }
 
     // Main
     public static void main(String[] args) {

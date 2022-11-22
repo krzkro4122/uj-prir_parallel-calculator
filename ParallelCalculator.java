@@ -12,16 +12,19 @@ import java.util.List;
 class ParallelCalculator implements DeltaParallelCalculator {
     // Fields
     private int threads = 0;
+
     private DeltaReceiver deltaReceiver;
     private ExecutorService executorService;
+
     protected List<Data> dataContainer = new ArrayList<Data>();
     protected List<Integer> calculatedEntries = new ArrayList<Integer>();
-    // CompletionService<ArrayList<Delta>> completionService;
 
     // Methods
     @Override
     public void setThreadsNumber(int threads) {
+
         this.threads = threads;
+
         executorService = new ThreadPoolExecutor(
             this.threads,
             this.threads,
@@ -30,28 +33,35 @@ class ParallelCalculator implements DeltaParallelCalculator {
             new TaskQueue(this.threads * 5)
         );
     }
-
-    @Override
-    public void setDeltaReceiver(DeltaReceiver receiver) { deltaReceiver = receiver; }
-
+ 
     private <T> String formatCollection(Collection<T> collection) {
         String output = new String();
         output += "[";
         for (T element : collection) {
             output += element + ", ";
         }
-        output += "] - " + collection.size();
+        output += "], length: " + collection.size();
         return output;
     }
 
     @Override
+    public void setDeltaReceiver(DeltaReceiver receiver) { 
+        deltaReceiver = receiver; 
+    }
+
+    @Override
     public void addData(Data data) {
-        System.out.println("{" + Thread.currentThread() + "} " +"[PREV] dataContainer: " + formatCollection(dataContainer));
+
+        System.out.print("dataContainer: [");
+        for (Data d : dataContainer) {
+           System.out.print(d.getDataId() + ", "); 
+        }
+        System.out.println("] => " + dataContainer.size());
+
         dataContainer.add(data);
         dataContainer.sort(Comparator.comparingInt(Data::getDataId));
-        System.out.println("{" + Thread.currentThread() + "} " +"[NOW] dataContainer: " + formatCollection(dataContainer));
 
-        final List<SimpleEntry<Data, Data>> entries = new ArrayList<SimpleEntry<Data, Data>>();
+        final List<SimpleEntry<Data, Data>> entries = new ArrayList<>();
 
         // Find consecutively numbered data IDs
         Data firstData = dataContainer.get(0);
@@ -60,29 +70,40 @@ class ParallelCalculator implements DeltaParallelCalculator {
             int desiredID = firstData.getDataId() + 1;
             int actualID = secondData.getDataId();
 
-            System.out.println("{" + Thread.currentThread() + "} " +"dataIDs: " + desiredID + ", " + actualID);
+            System.out.println(
+                "{" + Thread.currentThread() + "} " +"dataIDs: " 
+                + desiredID + ", " + actualID
+            );
 
             if (desiredID ==  actualID) {
-                System.out.println("{" + Thread.currentThread() + "} " +"Adding matching DataIDs: " + desiredID + ", " + actualID);
-                entries.add(new SimpleEntry<Data, Data>(firstData, secondData));
+
+                System.out.println(
+                    "{" + Thread.currentThread() + "} " + 
+                    "Adding matching DataIDs: " + desiredID + ", " + actualID
+                );
+                entries.add(new SimpleEntry<>(firstData, secondData));
             }
             firstData = secondData;
         }
-        System.out.println("{" + Thread.currentThread() + "} " +"entries: " + formatCollection(entries));
+        System.out.println(
+            "{" + Thread.currentThread() + "} " +"entries: " + 
+            formatCollection(entries)
+        );
 
         entries.forEach(entry -> {
-            System.out.println("{" + Thread.currentThread() + "} " +"entry(DataIds): (" + entry.getKey().getDataId() + ", " + entry.getValue().getDataId() + ")");
 
-            List<Task> tasks = disaggregateIntoTasks(entry);
+            System.out.println(
+                "{" + Thread.currentThread() + "} " + "entry(DataIds): (" + 
+                entry.getKey().getDataId() + ", " + 
+                entry.getValue().getDataId() + ")"
+            );
 
-            tasks.forEach(task -> {
-                System.out.println("{" + Thread.currentThread() + "} " +"taskID: " + task.acquireID());
-                executorService.execute(task);
-            });
+            disaggregateTasks(entry)
+                .forEach(task -> { executorService.execute(task); });
         });
     }
 
-    private List<Task> disaggregateIntoTasks(SimpleEntry<Data, Data> dataEntry) {
+    private List<Task> disaggregateTasks(SimpleEntry<Data, Data> dataEntry) {
         List<Task> tasks = new ArrayList<Task>();
 
         // All tasks have the same length
@@ -100,7 +121,9 @@ class ParallelCalculator implements DeltaParallelCalculator {
             super(capacity, new Comparator<Runnable>() {
                 @Override
                 public int compare(Runnable firstTask, Runnable secondTask) {
-                    return Comparator.comparingInt(Task::acquireID).compare((Task) firstTask, (Task) secondTask);
+                    return Comparator.comparingInt(Task::acquireID).compare(
+                        (Task) firstTask, (Task) secondTask
+                    );
                 }
             });
         }
@@ -110,8 +133,10 @@ class ParallelCalculator implements DeltaParallelCalculator {
         // Fields
         private final int id;
         private final int startFrom;
+
         private final Data firstData;
         private final Data secondData;
+
         private final List<Delta> deltas = new ArrayList<Delta>();
 
         // Methods
@@ -132,7 +157,11 @@ class ParallelCalculator implements DeltaParallelCalculator {
                 int secondValue = secondData.getValue(i);
 
                 if ( firstValue != secondValue ) {
-                    System.out.println("{" + Thread.currentThread() + "} " +"Adding deltaID: " + id + ", delta: " + (firstValue - secondValue));
+                    System.out.println(
+                        "{" + Thread.currentThread() + "} " + 
+                        "Adding deltaID: " + id + ", delta: " + 
+                        (firstValue - secondValue)
+                    );
                     deltas.add(new Delta(id, i, firstValue - secondValue));
                 }
             }
@@ -154,23 +183,21 @@ class ParallelCalculator implements DeltaParallelCalculator {
     public static void main(String[] args) {
         ParallelCalculator pc = new ParallelCalculator();
         pc.setThreadsNumber(2);
-        pc.setDeltaReceiver(new DeltaReceiver() {
-            @Override
-            public void accept(List<Delta> deltas) {
-                System.out.print("{" + Thread.currentThread() + "} " + "Accepting deltas: [");
-                for (Delta element : deltas) {
-                    System.out.print (element.getDataID() + ", ");
-                }
-                System.out.println("] -" + deltas.size());
-            }
-        });
+        pc.setDeltaReceiver(new DeltaReceiverExample());
 
         int data_size = 4;
         for (int i = 0; i < data_size; i++) {
+
             List<Integer> arr = new ArrayList<Integer>();
+
             for (int j = 0; j < data_size; j++)
                 arr.add(j - i * j);
-            System.out.println("{" + Thread.currentThread() + "} " +"Data[" + i + "]: " + pc.formatCollection(arr));
+
+            /*System.out.println(
+                "{" + Thread.currentThread() + "} " +
+                "Data[" + i + "]: " + pc.formatCollection(arr)
+            );*/
+
             Data data = new DataExample(arr, i);
             pc.addData(data);
         }

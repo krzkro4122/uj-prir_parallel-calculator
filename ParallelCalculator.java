@@ -118,7 +118,7 @@ class ParallelCalculator implements DeltaParallelCalculator {
         // int dataSize = dataEntry.getKey().getSize();
 
         int idx = dataEntry.getKey().getDataId();
-        threadReports.put(idx, 0);
+        threadReports.merge(idx, 0, Integer::sum);
 
         // System.out.println("************** threadReports: " + threadReports);
 
@@ -270,7 +270,7 @@ class ParallelCalculator implements DeltaParallelCalculator {
                 System.out.println("[" + Thread.currentThread().getId() + "]" + threadReports);
 
                 if (threadReports.get(id) != null && threadReports.get(id) != threads)
-                    threadReports.put(id, threadReports.get(id) + 1);
+                    threadReports.merge(id, 1, Integer::sum);
                 for (Delta delta : deltas) {
                     if ( !deltaContainer.contains(delta)) {
                         deltaContainer.add(delta);

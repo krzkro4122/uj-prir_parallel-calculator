@@ -15,55 +15,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
-
-class DataExample implements Data {
-    // Fields
-    private int dataID;
-    private List<Integer> data;
-    // Methods
-    DataExample() {dataID=0;}
-    DataExample(List<Integer> data, int dataID) { this.data = data; this.dataID = dataID; }
-    @Override
-    public int getDataId() { return dataID; }
-    @Override
-    public int getSize() { return data.size(); }
-    @Override
-    public int getValue(int idx) { return data.get(idx); }
-}
-
-
-class DeltaReceiverExample implements DeltaReceiver {
-
-    //Fields
-    private final List<Delta> deltas;
-
-    // Methods
-    DeltaReceiverExample() { deltas = new ArrayList<>(); }
-
-    @Override
-    public void accept(List<Delta> deltas) {
-
-        for (Delta delta : deltas) {
-            this.deltas.add(delta);
-        }
-
-       { // print TODO
-            String output = "";
-
-            output += "\t[" + Thread.currentThread().getId() + "] GOTTEN DELTAS:";
-
-            for (Delta delta : deltas)
-                output += "\n\t\t{deltaID: " + delta.getDataID() +
-                    ", deltaIndex: " + delta.getIdx() +
-                    ", deltaValue: " + delta.getDelta() + "" + "}";
-
-            System.out.println(output + "\n\t\tList<Delta>'s length: " + deltas.size());
-        }
-
-    }
-}
-
-
 class ParallelCalculator implements DeltaParallelCalculator {
 
     // Fields

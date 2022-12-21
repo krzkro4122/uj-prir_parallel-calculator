@@ -96,7 +96,9 @@ class ParallelCalculator implements DeltaParallelCalculator {
     }
 
     @Override
-    public void setDeltaReceiver(DeltaReceiver receiver) {deltaReceiver = receiver; }
+    public void setDeltaReceiver(DeltaReceiver receiver) {
+        deltaReceiver = receiver;
+    }
 
     @Override
     public void addData(Data data) {
@@ -210,52 +212,52 @@ class ParallelCalculator implements DeltaParallelCalculator {
         }
 
         // Copied and modified the ORIGINAL take method from PriorityBlockingQueue
-        // @Override
-        // public T take() throws InterruptedException {
+        @Override
+        public T take() throws InterruptedException {
 
-        //     if ( ! this.isEmpty() ) {
-        //         String output = "[QUEUE] TAKING tasks from queue:";
-        //         for (final var element : this) {
-        //             output +=
-        //                 "\n  {taskId: " + ( (Task) element ).acquireID() + ", " +
-        //                 "startFrom: " + ( (Task) element).startFrom + ", " +
-        //                 "dataId: " + ( (Task) element).firstData.getDataId() + "}";
-        //         }
-        //         System.out.println(output);
-        //     }
+            if ( ! this.isEmpty() ) {
+                String output = "[QUEUE] TAKING tasks from queue:";
+                for (final var element : this) {
+                    output +=
+                        "\n  {taskId: " + ( (Task) element ).acquireID() + ", " +
+                        "startFrom: " + ( (Task) element).startFrom + ", " +
+                        "dataId: " + ( (Task) element).firstData.getDataId() + "}";
+                }
+                System.out.println(output);
+            }
 
-        //     // Engage lock
-        //     final ReentrantLock lock = this.reentrantLock;
-        //     lock.lockInterruptibly();
+            // Engage lock
+            final ReentrantLock lock = this.reentrantLock;
+            lock.lockInterruptibly();
 
-        //     try {
-        //         final T topOfQueue = peek();
+            try {
+                final T topOfQueue = peek();
 
-        //         if ( topOfQueue == null ) {
-        //             return poll();
-        //         } else if ( ( (Task) topOfQueue ).acquireID() == lowestIdToGrab.get() ) {
-        //             return poll();
-        //         }
+                if ( topOfQueue == null ) {
+                    return poll();
+                } else if ( ( (Task) topOfQueue ).acquireID() == lowestIdToGrab.get() ) {
+                    return poll();
+                }
 
-        //         // Find the currently lowest, unprocessed Task' ID
-        //         final T foundT = findT();
-        //         System.out.println("anybody here? --------- ");
+                // Find the currently lowest, unprocessed Task' ID
+                final T foundT = findT();
+                System.out.println("anybody here? --------- ");
 
-        //         if (foundT == null) {
-        //             final T newT = poll();
-        //             if (newT != null) {
-        //                 lowestIdToGrab.set( ( (Task) newT).acquireID() );
-        //                 return newT;
-        //             }
-        //         } else {
-        //             remove(foundT);
-        //             return foundT;
-        //         }
-        //     } finally {
-        //         lock.unlock();
-        //     }
-        //     return null;
-        // }
+                if (foundT == null) {
+                    final T newT = poll();
+                    if (newT != null) {
+                        lowestIdToGrab.set( ( (Task) newT).acquireID() );
+                        return newT;
+                    }
+                } else {
+                    remove(foundT);
+                    return foundT;
+                }
+            } finally {
+                lock.unlock();
+            }
+            return null;
+        }
     }
 
     private class Task implements Runnable {
@@ -349,19 +351,26 @@ class ParallelCalculator implements DeltaParallelCalculator {
             if (delta.getDataID() == lowestIdToSend.get())
                 oneIdDeltas.add(delta);
 
+        if (oneIdDeltas.isEmpty())
+            return;
+
         if ( !alreadyConsumed.contains(entry) ) {
+
             alreadyConsumed.add(entry);
             deltaReceiver.accept(oneIdDeltas);
             lowestIdToSend.incrementAndGet();
+
         }
     }
 
     // Main
     public static void main(String[] args) {
+
         ParallelCalculator pc = new ParallelCalculator();
         pc.setThreadsNumber(5);
         pc.setDeltaReceiver(new DeltaReceiverExample());
 
+        // TEST - TODO: make a better one
         List<Integer> indeces = List.of(5, 4, 3, 2, 1, 0);
 
         // Mock data
@@ -389,6 +398,7 @@ class ParallelCalculator implements DeltaParallelCalculator {
                 }
             }
         }
+        // Cleanup
         pc.executorService.shutdown();
     }
 }

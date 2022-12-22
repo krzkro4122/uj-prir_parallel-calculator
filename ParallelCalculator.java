@@ -1,19 +1,18 @@
 import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
-
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantLock;
-
-import java.util.AbstractMap.SimpleEntry;
+import java.util.concurrent.Future;
 
 import java.util.Comparator;
+import java.util.Vector;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 
 class DataExample implements Data {
@@ -21,7 +20,7 @@ class DataExample implements Data {
     private int dataID;
     private List<Integer> data;
     // Methods
-    DataExample() {dataID=0;}
+    DataExample() { dataID=0; }
     DataExample(List<Integer> data, int dataID) { this.data = data; this.dataID = dataID; }
     @Override
     public int getDataId() { return dataID; }
@@ -38,7 +37,9 @@ class DeltaReceiverExample implements DeltaReceiver {
     private final List<Delta> deltas;
 
     // Methods
-    DeltaReceiverExample() { deltas = new ArrayList<>(); }
+    DeltaReceiverExample() {
+        deltas = new ArrayList<>();
+    }
 
     @Override
     public void accept(List<Delta> deltas) {
@@ -47,7 +48,7 @@ class DeltaReceiverExample implements DeltaReceiver {
             this.deltas.add(delta);
         }
 
-       { // print TODO
+       {
             String output = "";
 
             output += "\t[" + Thread.currentThread().getId() + "] GOTTEN DELTAS:";
@@ -67,299 +68,134 @@ class DeltaReceiverExample implements DeltaReceiver {
 class ParallelCalculator implements DeltaParallelCalculator {
 
     // Fields
-    private int threads = 0;
+    private int threads;
 
+    private Set<Integer> sentDataIds;
     private DeltaReceiver deltaReceiver;
     private ExecutorService executorService;
+    private ConcurrentSkipListMap<Integer, Data> datas;
 
-    private List<Data> dataContainer = new ArrayList<>();
-    private List<Delta> deltaContainer = new ArrayList<>();
-    private Map<Integer, Integer> threadReports = new HashMap<>();
-    private AtomicInteger lowestIdToSend = new AtomicInteger(0);
-    private HashSet<SimpleEntry<Data, Data>> alreadyConsumed = new HashSet<>();
+    // Private Classes
+    private class Task implements Callable<List<Delta>> {
+
+        private int id;
+        private int dataId;
+        private Data data1;
+        private Data data2;
+
+        Task (int id, int dataId, Data data1, Data data2) {
+            this.id = id;
+            this.dataId = dataId;
+            this.data1 = data1;
+            this.data2 = data2;
+        }
+
+        public synchronized int getId() {
+            return id;
+        }
+
+        public synchronized int getDataId() {
+            return dataId;
+        }
+
+        // This does all the dirty work AKA computations
+        @Override
+        public synchronized List<Delta> call() {
+
+            List<Delta> deltas = new ArrayList<>();
+
+            // Both the same size
+            for (int i = id; i < data1.getSize(); i += threads) {
+
+                if ( data1.getValue(i) != data2.getValue(i) ) {
+                    deltas.add(new Delta(data1.getDataId(), i, data1.getValue(i) - data2.getValue(i)));
+                }
+            }
+
+            return deltas;
+        }
+    }
+
+    private class DeltaProxy {
+
+        private Vector<Delta> deltas;
+        private Vector<Integer> dataIds;
+
+        DeltaProxy() {
+            this.deltas = new Vector<>();
+            this.dataIds = new Vector<>();
+        }
+
+        public synchronized void addDeltaList(List<Delta> deltas) {
+            this.deltas.addAll(deltas);
+            this.dataIds.add(deltas.get(0).getDataID());
+
+            if (dataIds.size() == threads) {
+                deltaReceiver.accept(deltas);
+            }
+        }
+    }
 
     // Methods
     @Override
-    public void setThreadsNumber(int threads) {
+    public synchronized void setThreadsNumber(int threads) {
+
+        this.sentDataIds = ConcurrentHashMap.newKeySet();
+        this.datas = new ConcurrentSkipListMap<>();
 
         this.threads = threads;
 
-        executorService = new ThreadPoolExecutor(
-            this.threads,
-            this.threads,
-            0L,
-            TimeUnit.SECONDS,
-            new TaskQueue<>(this.threads * 5, (firstTask, secondTask) -> {
-                return Comparator.comparingInt(Task::acquireID).compare( (Task) firstTask, (Task) secondTask );
+        executorService = new ThreadPoolExecutor( 0, this.threads, 0L, TimeUnit.SECONDS,
+            new PriorityBlockingQueue<>(this.threads * 2, (firstTask, secondTask) -> {
+                return Comparator.comparingInt(Task::getId).compare( (Task) firstTask, (Task) secondTask );
             })
         );
     }
 
     @Override
-    public void setDeltaReceiver(DeltaReceiver receiver) {
+    public synchronized void setDeltaReceiver(DeltaReceiver receiver) {
         deltaReceiver = receiver;
     }
 
     @Override
-    public void addData(Data data) {
+    public synchronized void addData(Data data) {
 
-        dataContainer.add(data);
-        dataContainer.sort(Comparator.comparingInt(Data::getDataId));
+        // Add data to the list
+        datas.put(data.getDataId(), data);
 
-        // { // print TODO
-        //     String temp = "";
-        //     temp += "DATA dataContainer: [";
-        //     for (Data d : dataContainer) { temp += d.getDataId() + ", "; }
-        //     System.out.println(temp + "] => " + dataContainer.size());
-        // }
-
-        // Guard statement
-        if (dataContainer.size() <= 1)
+        if (datas.size() < 2) {
             return;
-
-        final List<SimpleEntry<Data, Data>> entries = new ArrayList<>();
-
-        // Find consecutively numbered data IDs
-        Data firstData = dataContainer.get(0);
-
-        for (Data d : dataContainer) {
-
-            Data secondData = d;
-
-            int actualID = secondData.getDataId();
-            int desiredID = firstData.getDataId() + 1;
-
-            // System.out.println("CHECKING if dataIDs: " + (desiredID - 1) + "+1 == " + actualID); // TODO
-
-            if (desiredID == actualID) {
-                // System.out.println("FOUND dataIDs: " + (desiredID - 1) + ", " + actualID); // TODO
-
-                SimpleEntry<Data, Data> foundEntry = new SimpleEntry<>(firstData, secondData);
-
-                if ( !alreadyConsumed.contains(foundEntry)) {
-                    entries.add(foundEntry);
-                }
-            }
-            firstData = secondData;
         }
 
-        // { // print TODO
-        //     String temp = "";
-        //     temp += "entries<DataID, DataID>: [";
-        //     for (SimpleEntry<Data, Data> se : entries) {
-        //         temp += "(" + se.getKey().getDataId() + ",";
-        //         temp += se.getValue().getDataId() + "), ";
-        //     }
-        //     System.out.println(temp + "] => " + entries.size());
-        // }
+        // Act upon a Data pair only if the neighbouring Data IDs are uniform
+        for (int i : datas.keySet()) {
 
-        entries.forEach(entry -> {
-            disaggregateTasks(entry).forEach(task -> {
-                executorService.execute(task);
-            });
-            // executorService.execute(new Task(entry, entry.getKey().getDataId()));
-        });
-    }
+            System.out.println(datas);
 
-    private List<Task> disaggregateTasks(SimpleEntry<Data, Data> dataEntry) {
-        List<Task> tasks = new ArrayList<Task>();
+            if ( this.sentDataIds.contains(datas.get(i).getDataId()) )
+                continue;
 
-        // TODO ???
-        // All tasks have the same length
-        // int dataSize = dataEntry.getKey().getSize();
+            if ( ! datas.containsKey(i + 1) )
+                return;
 
-        int idx = dataEntry.getKey().getDataId();
-        threadReports.merge(idx, 0, Integer::sum);
+            if (datas.get(i).getDataId() + 1 == datas.get(i + 1).getDataId()) {
 
-        // System.out.println("************** threadReports: " + threadReports);
+                DeltaProxy deltaProxy = new DeltaProxy();
+                this.sentDataIds.add(datas.get(i).getDataId());
 
-        for (int i = 0; i < threads; i++) {
-            // System.out.println("---- ADDING dataEntry: " + dataEntry.getKey().getDataId() + ", startingPoint: " + i);
-            tasks.add(new Task(dataEntry, i));
-        }
+                for (int k = 0; k < this.threads; k++) {
 
-        return tasks;
-    }
+                    Future<List<Delta>> futureDeltas = executorService.submit( new Task(k, datas.get(i).getDataId(), datas.get(i), datas.get(i + 1)) );
+                    List<Delta> deltas = null;
 
-    private String data2string(Data data, String name) {
-        String output = "\t[" + Thread.currentThread().getId() + "] GOTTEN " + name + ": {dataID: " + data.getDataId() + ", data: [";
-        for (int i = 0; i < data.getSize(); i++) {
-            if (i == data.getSize() - 1)
-                output += data.getValue(i);
-            else
-                output += data.getValue(i) + ",  ";
-        }
-        output += "], dataSize: " + data.getSize() + "}";
-        return output;
-    }
-
-    private class TaskQueue<T> extends PriorityBlockingQueue<T> {
-
-        private final AtomicInteger lowestIdToGrab = new AtomicInteger(0);
-        private final ReentrantLock reentrantLock = new ReentrantLock();
-
-        public TaskQueue(int capacity, Comparator<? super T> comparator) {
-            super(capacity, comparator);
-        }
-
-        private T findT() {
-
-            for (T t : this)
-                if ( ( (Task) t ).acquireID() == lowestIdToGrab.get())
-                    return t;
-
-            return null;
-        }
-
-        // Copied and modified the ORIGINAL take method from PriorityBlockingQueue
-        @Override
-        public T take() throws InterruptedException {
-
-            if ( ! this.isEmpty() ) {
-                String output = "[QUEUE] TAKING tasks from queue:";
-                for (final var element : this) {
-                    output +=
-                        "\n  {taskId: " + ( (Task) element ).acquireID() + ", " +
-                        "startFrom: " + ( (Task) element).startFrom + ", " +
-                        "dataId: " + ( (Task) element).firstData.getDataId() + "}";
-                }
-                System.out.println(output);
-            }
-
-            // Engage lock
-            final ReentrantLock lock = this.reentrantLock;
-            lock.lockInterruptibly();
-
-            try {
-                final T topOfQueue = peek();
-
-                if ( topOfQueue == null ) {
-                    return poll();
-                } else if ( ( (Task) topOfQueue ).acquireID() == lowestIdToGrab.get() ) {
-                    return poll();
-                }
-
-                // Find the currently lowest, unprocessed Task' ID
-                final T foundT = findT();
-                System.out.println("anybody here? --------- ");
-
-                if (foundT == null) {
-                    final T newT = poll();
-                    if (newT != null) {
-                        lowestIdToGrab.set( ( (Task) newT).acquireID() );
-                        return newT;
-                    }
-                } else {
-                    remove(foundT);
-                    return foundT;
-                }
-            } finally {
-                lock.unlock();
-            }
-            return null;
-        }
-    }
-
-    private class Task implements Runnable {
-        // Fields
-        private final int id;
-        private final int startFrom;
-
-        private Data firstData;
-        private Data secondData;
-
-        private final SimpleEntry<Data, Data> currentEntry;
-        private final List<Delta> deltas = new ArrayList<Delta>();
-
-        // Methods
-        Task(SimpleEntry<Data, Data> dataEntry, int start) {
-
-            startFrom = start;
-            currentEntry = dataEntry;
-            firstData = dataEntry.getKey();
-            secondData = dataEntry.getValue();
-
-            if (firstData.getDataId() > secondData.getDataId()) {
-                Data temp = firstData;
-                firstData = secondData;
-                secondData = temp;
-            }
-
-            id = firstData.getDataId();
-        }
-
-        // This does all the dirty work AKA computations
-        @Override
-        public void run() {
-
-            // print both datas first
-            // System.out.println(data2string(firstData, "firstData"));
-            // System.out.println(data2string(secondData, "secondData"));
-
-            int dataSize = firstData.getSize();
-
-            for (int i = startFrom; i < dataSize; i += threads) {
-
-                int firstValue = firstData.getValue(i);
-                int secondValue = secondData.getValue(i);
-
-                if ( firstValue == secondValue )
-                    continue;
-
-                // System.out.println(
-                //     "\t[" + Thread.currentThread().getId() + "]" +
-                //     " - DELTA found: {deltaID: " + id +
-                //     ", deltaIndex: " + i +
-                //     ", deltaValue: " + (firstValue - secondValue) + " (" + firstValue + " - " + secondValue + ")}"
-                // );
-
-                deltas.add(new Delta(id, i, firstValue - secondValue));
-            }
-
-            synchronized (deltaContainer) {
-
-                // System.out.println("[" + Thread.currentThread().getId() + "]" + threadReports);
-
-                if (threadReports.get(id) != null && threadReports.get(id) != threads)
-                    threadReports.merge(id, 1, Integer::sum);
-                for (Delta delta : deltas) {
-                    if ( !deltaContainer.contains(delta)) {
-                        deltaContainer.add(delta);
+                    try {
+                        deltas = futureDeltas.get();
+                        deltaProxy.addDeltaList(deltas);
+                    } catch (InterruptedException | ExecutionException e) {
+                        e.printStackTrace();
                     }
                 }
-
-                tryToSendDeltas(currentEntry);
             }
-        }
-
-        public int acquireID() { return id; }
-    }
-
-    private void tryToSendDeltas(SimpleEntry<Data, Data> entry) {
-        if (deltaContainer.isEmpty())
-            return;
-
-        if (threadReports.get(lowestIdToSend.get()) == null)
-            return;
-
-        if (threadReports.get(lowestIdToSend.get()) != threads)
-            return;
-
-        List<Delta> oneIdDeltas = new ArrayList<>();
-
-        for (Delta delta : deltaContainer)
-            if (delta.getDataID() == lowestIdToSend.get())
-                oneIdDeltas.add(delta);
-
-        if (oneIdDeltas.isEmpty())
-            return;
-
-        if ( !alreadyConsumed.contains(entry) ) {
-
-            alreadyConsumed.add(entry);
-            deltaReceiver.accept(oneIdDeltas);
-            lowestIdToSend.incrementAndGet();
-
         }
     }
 
@@ -367,24 +203,20 @@ class ParallelCalculator implements DeltaParallelCalculator {
     public static void main(String[] args) {
 
         ParallelCalculator pc = new ParallelCalculator();
-        pc.setThreadsNumber(5);
         pc.setDeltaReceiver(new DeltaReceiverExample());
+        pc.setThreadsNumber(5);
 
-        // TEST - TODO: make a better one
+        // TEST
         List<Integer> indeces = List.of(5, 4, 3, 2, 1, 0);
 
         // Mock data
         int data_size = indeces.size();
         for (int i = 0; i < data_size; i++) {
 
-            List<Integer> list = new ArrayList<Integer>();
+            List<Integer> list = new ArrayList<>();
 
             for (int j = 0; j < data_size; j++)
                 list.add(j + i);
-
-            // System.out.println(
-            //     "ADDING id: " + indeces.get(i) +  " data: " + list
-            // );
 
             Data data = new DataExample(list, indeces.get(i));
             pc.addData(data);

@@ -7,7 +7,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Vector;
 
 
 class DataExample implements Data {
@@ -39,22 +38,20 @@ class DeltaReceiverExample implements DeltaReceiver {
     @Override
     public void accept(List<Delta> deltas) {
 
-        for (Delta delta : deltas) {
-            this.deltas.add(delta);
-        }
+        this.deltas.addAll(deltas);
 
-       {
-            String output = "";
+    //    {
+    //         String output = "";
 
-            output += "\t[" + Thread.currentThread().getId() + "] Got deltas: \n";
+    //         output += "\t[" + Thread.currentThread().getId() + "] Got deltas: \n";
 
-            for (Delta delta : deltas)
-                output += "{dataID: " + delta.getDataID() +
-                    ", deltaIndex: " + delta.getIdx() +
-                    ", deltaValue: " + delta.getDelta() + " " + "length: " + deltas.size() + "}\n";
+    //         for (Delta delta : deltas)
+    //             output += "{dataID: " + delta.getDataID() +
+    //                 ", deltaIndex: " + delta.getIdx() +
+    //                 ", deltaValue: " + delta.getDelta() + " " + "length: " + deltas.size() + "}\n";
 
-            System.out.println(output);
-        }
+    //         System.out.println(output);
+    //     }
     }
 }
 
@@ -73,39 +70,53 @@ class ParallelCalculator implements DeltaParallelCalculator {
     // Private Classes
     private class Task implements Runnable {
 
-        private int id;
+        private int thread;
         private int dataIdx;
         private Data data1;
         private Data data2;
+
         private List<Delta> deltas;
 
-        Task (int id, int dataIdx, Data data1, Data data2) {
+        Task (int thread, int dataIdx, Data data1, Data data2) {
 
-            this.id = id;
+            this.thread = thread;
             this.dataIdx = dataIdx;
             this.data1 = data1;
             this.data2 = data2;
+            this.deltas = new ArrayList<>();
+
+            // System.out.println("\t\t" + data1.getValue(5) + "  vs.  " + data2.getValue(5));
+
+
 
         }
 
-        public int getId() {
-            return id;
+        public int getDataId() {
+            return dataIdx;
         }
 
         // This does all the dirty work AKA computations
         @Override
         public void run() {
 
-            this.deltas = new ArrayList<>();
-
             // Compute and memoize the deltas
-            for (int i = id; i < data1.getSize(); i += threads) {
+            for (int i = thread; i < data1.getSize(); i += threads) {
 
-                if ( data1.getValue(i) != data2.getValue(i) ) {
-                    deltas.add(new Delta(dataIdx, i, data1.getValue(i) - data2.getValue(i)));
+                int data1Val = data1.getValue(i);
+                int data2Val = data2.getValue(i);
+
+                if ( data1Val != data2Val ) {
+
+                    deltas.add(new Delta(dataIdx, i, data2Val - data1Val));
+
                 }
 
             }
+
+            // for (Delta delt : deltas) {
+            //     System.out.println("dataIdx: " + delt.getDataID() + ", i: " + delt.getIdx() + ", delta: " + delt.getDelta());
+            // }
+
             proxies.get(dataIdx).addAll(deltas);
         }
 
@@ -125,15 +136,17 @@ class ParallelCalculator implements DeltaParallelCalculator {
 
         }
 
-        public synchronized void addAll(List<Delta> incomingDeltas) {
+        public void addAll(List<Delta> incomingDeltas) {
 
-            deltas.addAll(incomingDeltas);
-            counter.set(counter.get() + 1);
+            synchronized (proxies) {
 
-            if (counter.get() != threads) {
-                return;
+                deltas.addAll(incomingDeltas);
+                counter.set(counter.get() + 1);
+
+                if (counter.get() != threads) {
+                    return;
+                }
             }
-
 
             for (int id : proxies.keySet()) {
 
@@ -145,10 +158,10 @@ class ParallelCalculator implements DeltaParallelCalculator {
                             return;
                         }
 
-                        System.out.println(proxies.keySet());
+                        // System.out.println(proxies.keySet());
                         System.out.println("\t\t--- lowstId: " + lowestId);
 
-                        deltaReceiver.accept(proxies.remove(id).deltas);
+                        deltaReceiver.accept(proxies.get(id).deltas);
                         lowestId.set(lowestId.get() + 1);
 
                     }
@@ -167,9 +180,9 @@ class ParallelCalculator implements DeltaParallelCalculator {
         this.proxies = new ConcurrentSkipListMap<>();
         this.datas = new ConcurrentSkipListMap<>();
 
-        executorService = new ThreadPoolExecutor( this.threads, this.threads, 100L, TimeUnit.SECONDS,
+        executorService = new ThreadPoolExecutor( this.threads, this.threads, 100L, TimeUnit.MILLISECONDS,
             new PriorityBlockingQueue<>(this.threads * 2, (firstTask, secondTask) -> {
-                return Comparator.comparingInt(Task::getId).compare( (Task) firstTask, (Task) secondTask );
+                return Comparator.comparingInt(Task::getDataId).compare( (Task) firstTask, (Task) secondTask );
             })
         );
     }
@@ -180,14 +193,10 @@ class ParallelCalculator implements DeltaParallelCalculator {
     }
 
     @Override
-    public synchronized void addData(Data data) {
+    public void addData(Data data) {
 
         // Add data to the list
         datas.put(data.getDataId(), data);
-
-        if (datas.size() < 2) {
-            return;
-        }
 
         // Act upon a Data pair only if the neighbouring Data IDs are uniform
         for (int i : datas.keySet()) {
@@ -208,9 +217,24 @@ class ParallelCalculator implements DeltaParallelCalculator {
                 continue;
             }
 
+
             if (dataId + 1 != datas.get(i + 1).getDataId()) {
                 continue;
             }
+
+
+            String output = "[";
+
+            for (int m = 0; m < dataOne.getSize(); m++) {
+                output += dataOne.getValue(m);
+            }
+
+            output += "   VS.  ";
+
+            for (int m = 0; m < dataTwo.getSize(); m++) {
+                output += dataTwo.getValue(m);
+            }
+            System.out.println(output + "]");
 
             proxies.putIfAbsent(dataId, new DeltaProxy(dataId));
 
@@ -239,7 +263,7 @@ class ParallelCalculator implements DeltaParallelCalculator {
             List<Integer> list = new ArrayList<>();
 
             for (int j = 0; j < data_size; j++)
-                list.add(j + i);
+                list.add(i);
 
             Data data = new DataExample(list, indeces.get(i));
             pc.addData(data);
